@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>국내 하천 범람 위험 지도</title>
+  <!-- Leaflet 지도 라이브러리 (API 키 불필요) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body, html {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", sans-serif;
+      overflow: hidden;
+    }
+    .layout { display: flex; width: 100%; height: 100%; }
+    .sidebar {
+      width: 360px; max-width: 100%; background: #fff;
+      border-right: 1px solid #e2e8f0; padding: 20px;
+      display: flex; flex-direction: column; gap: 14px;
+      box-shadow: 2px 0 12px rgba(0,0,0,0.08); z-index: 1000;
+      overflow-y: auto;
+    }
+    .title { font-size: 18px; font-weight: 700; color: #0f172a; margin: 0; }
+    .subtitle { font-size: 13px; color: #64748b; margin: 4px 0 0; }
+    .search-row { display: flex; gap: 8px; }
+    input {
+      flex: 1; padding: 10px 12px; border: 1px solid #cbd5e1;
+      border-radius: 8px; font-size: 14px; outline: none;
+    }
+    input:focus { border-color: #03c75a; }
+    button {
+      padding: 10px 16px; border: none; border-radius: 8px;
+      background: #03c75a; color: #fff; font-weight: 600;
+      font-size: 14px; cursor: pointer;
+    }
+    button:hover { background: #02b350; }
+    .quick-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tag {
+      padding: 5px 10px; border-radius: 999px; font-size: 12px;
+      background: #f1f5f9; color: #334155; cursor: pointer; border: 1px solid #e2e8f0;
+    }
+    .tag:hover { background: #e2e8f0; }
+    .card {
+      border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px;
+      background: #f8fafc; font-size: 14px; line-height: 1.65;
+    }
+    .badge {
+      display: inline-block; padding: 3px 10px; border-radius: 999px;
+      color: #fff; font-weight: 700; font-size: 12px; margin-left: 6px;
+    }
+    .legend {
+      margin-top: auto; padding-top: 12px; border-top: 1px solid #e2e8f0;
+      font-size: 12px; color: #475569;
+    }
+    .legend-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+    #map { flex: 1; height: 100%; z-index: 1; }
+    @media (max-width: 768px) {
+      .layout { flex-direction: column; }
+      .sidebar { width: 100%; height: 42%; border-right: none; border-bottom: 1px solid #e2e8f0; }
+      #map { height: 58%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div>
+        <h1 class="title">국내 하천 범람 위험 지도</h1>
+        <p class="subtitle">하천 이름을 검색하면 지도에서 위치와 범람 위험 반경을 표시합니다.</p>
+      </div>
+
+      <div class="search-row">
+        <input id="riverInput" type="text" placeholder="하천명 입력 (예: 한강, 낙동강)" onkeydown="if(event.key==='Enter') searchRiver()" />
+        <button onclick="searchRiver()">검색</button>
+      </div>
+
+      <div class="quick-tags">
+        <span class="tag" onclick="selectByName('한강')">한강</span>
+        <span class="tag" onclick="selectByName('낙동강')">낙동강</span>
+        <span class="tag" onclick="selectByName('금강')">금강</span>
+        <span class="tag" onclick="selectByName('영산강')">영산강</span>
+        <span class="tag" onclick="selectByName('섬진강')">섬진강</span>
+        <span class="tag" onclick="selectByName('안양천')">안양천</span>
+        <span class="tag" onclick="selectByName('중랑천')">중랑천</span>
+        <span class="tag" onclick="selectByName('탄천')">탄천</span>
+      </div>
+
+      <div id="resultCard" class="card">
+        하천 이름을 입력하거나 위 태그를 클릭하면 해당 위치로 지도가 이동합니다.
+      </div>
+
+      <div class="legend">
+        <b>범람 위험 등급 기준</b>
+        <div class="legend-row"><span class="dot" style="background:#dc2626"></span> 심각 (75점 이상)</div>
+        <div class="legend-row"><span class="dot" style="background:#ea580c"></span> 경계 (50~74점)</div>
+        <div class="legend-row"><span class="dot" style="background:#d97706"></span> 주의 (25~49점)</div>
+        <div class="legend-row"><span class="dot" style="background:#16a34a"></span> 안전 (25점 미만)</div>
+      </div>
+    </aside>
+
+    <main id="map"></main>
+  </div>
+
+  <script>
+    // 대한민국 중심 좌표로 지도 초기화
+    const map = L.map('map').setView([36.35, 127.85], 7);
+
+    // 실제 지도 타일 연결 (API 키 불필요)
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const rivers = [
+      {
+        name: "한강", basin: "한강권역", lat: 37.528, lng: 126.934,
+        riverbedCoeff: 390, rainfallMm: 85, waterLevelRatio: 0.72,
+        path: [[37.548, 126.875], [37.535, 126.905], [37.528, 126.934], [37.515, 126.978], [37.522, 127.035]]
+      },
+      {
+        name: "낙동강", basin: "낙동강권역", lat: 35.179, lng: 128.950,
+        riverbedCoeff: 370, rainfallMm: 42, waterLevelRatio: 0.45,
+        path: [[35.310, 128.975], [35.240, 128.960], [35.179, 128.950], [35.110, 128.935]]
+      },
+      {
+        name: "금강", basin: "금강권역", lat: 36.012, lng: 126.735,
+        riverbedCoeff: 300, rainfallMm: 110, waterLevelRatio: 0.81,
+        path: [[36.045, 126.850], [36.025, 126.790], [36.012, 126.735], [36.002, 126.680]]
+      },
+      {
+        name: "영산강", basin: "영산강권역", lat: 34.978, lng: 126.512,
+        riverbedCoeff: 320, rainfallMm: 25, waterLevelRatio: 0.35,
+        path: [[35.060, 126.620], [35.015, 126.565], [34.978, 126.512], [34.920, 126.460]]
+      },
+      {
+        name: "섬진강", basin: "섬진강권역", lat: 35.192, lng: 127.625,
+        riverbedCoeff: 390, rainfallMm: 135, waterLevelRatio: 0.88,
+        path: [[35.280, 127.540], [35.235, 127.585], [35.192, 127.625], [35.120, 127.710]]
+      },
+      {
+        name: "안양천", basin: "한강권역", lat: 37.512, lng: 126.885,
+        riverbedCoeff: 430, rainfallMm: 95, waterLevelRatio: 0.78,
+        path: [[37.440, 126.902], [37.480, 126.888], [37.512, 126.885], [37.548, 126.882]]
+      },
+      {
+        name: "중랑천", basin: "한강권역", lat: 37.575, lng: 127.068,
+        riverbedCoeff: 410, rainfallMm: 90, waterLevelRatio: 0.75,
+        path: [[37.655, 127.055], [37.610, 127.065], [37.575, 127.068], [37.542, 127.042]]
+      },
+      {
+        name: "탄천", basin: "한강권역", lat: 37.485, lng: 127.075,
+        riverbedCoeff: 400, rainfallMm: 65, waterLevelRatio: 0.58,
+        path: [[37.390, 127.115], [37.440, 127.095], [37.485, 127.075], [37.518, 127.068]]
+      }
+    ];
+
+    let activeLayerGroup = L.layerGroup().addTo(map);
+
+    function calcRisk(r) {
+      const rainScore = Math.min(r.rainfallMm / 150, 1) * 45;
+      const coeffScore = Math.min(r.riverbedCoeff / 500, 1) * 25;
+      const levelScore = Math.min(r.waterLevelRatio, 1) * 30;
+      const score = Math.round((rainScore + coeffScore + levelScore) * 10) / 10;
+
+      if (score >= 75) return { score, level: "심각", color: "#dc2626" };
+      if (score >= 50) return { score, level: "경계", color: "#ea580c" };
+      if (score >= 25) return { score, level: "주의", color: "#d97706" };
+      return { score, level: "안전", color: "#16a34a" };
+    }
+
+    // 모든 하천 기본 표시
+    rivers.forEach(r => {
+      const risk = calcRisk(r);
+      const line = L.polyline(r.path, {
+        color: risk.color,
+        weight: 5,
+        opacity: 0.75
+      }).addTo(map);
+
+      line.on('click', () => focusRiver(r));
+    });
+
+    function selectByName(name) {
+      document.getElementById("riverInput").value = name;
+      searchRiver();
+    }
+
+    function searchRiver() {
+      const keyword = document.getElementById("riverInput").value.trim();
+      const card = document.getElementById("resultCard");
+
+      if (!keyword) {
+        card.innerHTML = "하천 이름을 먼저 입력해 주세요.";
+        return;
+      }
+
+      const found = rivers.find(r => r.name.includes(keyword));
+      if (!found) {
+        card.innerHTML = `"<b>${keyword}</b>" 하천 데이터를 찾지 못했습니다.`;
+        return;
+      }
+
+      focusRiver(found);
+    }
+
+    function focusRiver(r) {
+      const risk = calcRisk(r);
+      const card = document.getElementById("resultCard");
+
+      // 이전 강조 표시 제거
+      activeLayerGroup.clearLayers();
+
+      // 지도 부드럽게 이동 및 확대
+      map.flyTo([r.lat, r.lng], 12, { duration: 1.0 });
+
+      // 선택된 하천 굵은 선 강조
+      L.polyline(r.path, {
+        color: risk.color,
+        weight: 8,
+        opacity: 1
+      }).addTo(activeLayerGroup);
+
+      // 범람 위험 반경 원 표시
+      L.circle([r.lat, r.lng], {
+        radius: Math.max(800, risk.score * 35),
+        color: risk.color,
+        fillColor: risk.color,
+        fillOpacity: 0.25,
+        weight: 2
+      }).addTo(activeLayerGroup);
+
+      // 말풍선(팝업) 표시
+      L.popup()
+        .setLatLng([r.lat, r.lng])
+        .setContent(`
+          <div style="font-family:sans-serif; line-height:1.5;">
+            <b>${r.name}</b> (${r.basin})<br/>
+            범람 위험도: <b style="color:${risk.color}">${risk.level} (${risk.score}점)</b><br/>
+            하상계수: ${r.riverbedCoeff} | 강수량: ${r.rainfallMm}mm
+          </div>
+        `)
+        .openOn(map);
+
+      // 왼쪽 정보 카드 갱신
+      card.innerHTML = `
+        <div style="font-size:17px; font-weight:700; margin-bottom:8px;">
+          ${r.name} <span style="font-size:13px; color:#64748b; font-weight:400;">(${r.basin})</span>
+          <span class="badge" style="background:${risk.color}">${risk.level} (${risk.score}점)</span>
+        </div>
+        <div>• <b>하상계수:</b> ${r.riverbedCoeff}</div>
+        <div>• <b>최근 강수량:</b> ${r.rainfallMm} mm</div>
+        <div>• <b>제방 수위 비율:</b> ${Math.round(r.waterLevelRatio * 100)}%</div>
+        <div>• <b>중심 좌표:</b> 위도 ${r.lat}, 경도 ${r.lng}</div>
+      `;
+    }
+  </script>
+</body>
+</html>
